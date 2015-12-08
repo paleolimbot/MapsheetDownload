@@ -1,5 +1,0 @@
-<RCC>
-    <qresource prefix="/plugins/mapsheetdownload" >
-        <file>NTSDownload_Icon.png</file>
-    </qresource>
-</RCC>

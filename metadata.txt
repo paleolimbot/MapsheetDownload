@@ -11,11 +11,11 @@
 [general]
 name=NTS Data Download
 qgisMinimumVersion=1.8
-qgisMaximumVersion=2.10
+qgisMaximumVersion=2.12
 description=Download CanVec, NTDB, DEM, Topo data for Canada
-version=0.2
-author=Casey Vandenberg / SJ Geophysics
-email=casey.vandenberg@sjgeophysics.com
+version=0.3
+author=Casey Vandenberg / SJ Geophysics, Dewey Dunnington / Fish & Whistle
+email=dewey@fishandwhistle.net
 
 # end of mandatory metadata
 
@@ -27,7 +27,7 @@ email=casey.vandenberg@sjgeophysics.com
 # tags are comma separated with spaces allowed
 tags=
 
-homepage=
+homepage=http://github.com/paleolimbot/MapsheetDownload
 tracker=
 repository=
 icon=icon.png
