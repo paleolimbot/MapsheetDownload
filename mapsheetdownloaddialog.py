@@ -29,6 +29,8 @@ from PyQt4.QtGui import *
 from qgis.core import *
 from qgis.gui import *
 
+import nts
+
 from ui_mapsheetdownload import Ui_MapsheetDownload
 # create the dialog for zoom to point
 
@@ -57,6 +59,8 @@ class MapsheetDownload(QtGui.QDialog, Ui_MapsheetDownload):
         #self.ui = Ui_MapsheetDownload()
         self.setupUi(self)
         QObject.connect( self.browserButton, SIGNAL( "clicked()" ), self.outputDirectory )
+        self.connect(self.fromExtent50k, SIGNAL("clicked()"), self.autoFillMapsheetsBox50k)
+        self.connect(self.fromExtent250k, SIGNAL("clicked()"), self.autoFillMapsheetsBox250k)
         
     def outputDirectory(self):
         """Open a browser dialog and set the output path"""
@@ -125,7 +129,17 @@ class MapsheetDownload(QtGui.QDialog, Ui_MapsheetDownload):
         if outputDir:
             settings.setValue(key, outDir)
         return outputDir
-
+    
+    
+    def autoFillMapsheetsBox50k(self):
+        extent = self.iface.mapCanvas().extent()
+        sheetslist = getMapsheetIdsFromExtent(nts.SCALE_50K, extent)
+        self.input50k.setText(", ".join(sheetslist))
+        
+    def autoFillMapsheetsBox250k(self):
+        extent = self.iface.mapCanvas().extent()
+        sheetslist = getMapsheetIdsFromExtent(nts.SCALE_250K, extent)
+        self.input250k.setText(", ".join(sheetslist))
 
     def dlCanVec(self,DestinationDirectory,NTS_50k_Sheet):
         """
@@ -764,7 +778,6 @@ def addTopoToCanvas(TopoFilePath):
     return True
        
 def isvalid50k(string):
-    returnValue = True
     inputValue = False
     if len(string)>0:
         inputValue = True
@@ -835,3 +848,10 @@ def getShpList(Dir):
             shpHeadList.append(str(fileHead))
             shpList.append(str(fileName))
     return shpList,shpHeadList
+
+def getMapsheetIdsFromExtent(scale, extent):
+    '''Uses the nts module to get a list of nts ids based on the current extent.'''
+    bounds = (extent.xMinimum(), extent.xMaximum(),
+              extent.yMinimum(), extent.yMaximum())
+    return ["".join(nts.ntsId(scale, tile)) for tile in nts.tilesBy(scale, bounds)]
+    
