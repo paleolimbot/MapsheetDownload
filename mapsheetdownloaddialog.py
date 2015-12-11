@@ -91,7 +91,7 @@ class MapsheetDownloadDialog(QDialog, Ui_MapsheetDownload):
         outputDir = str(self.outputDir.text())
         
         #TODO do downloading
-        
+        self.download("product", "sheets", outputDir)
         
         #add layers to map
         if self.addMapLayers.isChecked():
@@ -107,10 +107,26 @@ class MapsheetDownloadDialog(QDialog, Ui_MapsheetDownload):
         sheetslist = getMapsheetIdsFromExtent(nts.SCALE_250K, extent)
         self.input250k.setText(", ".join(sheetslist))        
 
-    def download(self):
-        pass
+    def download(self, product, sheets, outputDir):
+        #dummy download to test download thread
+        url = "http://ftp2.cits.rncan.gc.ca/pub/canvec/50k_shp/021/h/canvec_021h01_shp.zip"
+        dlthread = DownloaderThread(self, url, outputDir, key="021h01")
+        dlthread.setOnProgress(self.onDownloadProgress)
+        dlthread.setOnFinished(self.onDownlonadFinish)
+        dlthread.setOnError(self.onDownloadError)
+        dlthread.start()
     
-    def extract(self):
+    def onDownloadError(self, key, errorString):
+        self.status.insertPlainText("error (" + key + ")! " + str(errorString))
+    
+    def onDownlonadFinish(self, key):
+        self.status.insertPlainText("done! " + key)
+    
+    def onDownloadProgress(self, key, current, total):
+        self.progressBar.setMaximum(total)
+        self.progressBar.setValue(current)
+    
+    def extract(self, product, sheets):
         pass
 
     def addToLayers(self,DestinationDirectory,NTS_50k_Sheets,NTS_250k_Sheets,downloadFlags):
@@ -119,34 +135,35 @@ class MapsheetDownloadDialog(QDialog, Ui_MapsheetDownload):
 
 class DownloaderThread(QThread):
     
-    def __init__(self, url, filename, key=None):
-        QThread.__init__(self)
+    def __init__(self, parent, url, outdir, key=None):
+        QThread.__init__(self, parent)
         self.keyobj = key
         self.url = url
-        self.filename = filename
+        self.outdir = outdir
         self.cancel = False
     
     def setOnFinished(self, slot):
         if self.keyobj is None:
-            self.connect(SIGNAL("finished()"), slot)
+            self.connect(self, SIGNAL("finished()"), slot)
         else:
-            self.connect(SIGNAL("finished()"), lambda: slot(self.keyobj))
+            self.connect(self, SIGNAL("finished()"), lambda: slot(self.keyobj))
     
     def setOnError(self, slot):
         if self.keyobj is None:
-            self.connect(SIGNAL("error(QString)"), slot)
+            self.connect(self, SIGNAL("error(QString)"), slot)
         else:
-            self.connect(SIGNAL("error(QString)"), lambda string: slot(self.keyobj, string))
+            self.connect(self, SIGNAL("error(QString)"), lambda string: slot(self.keyobj, string))
     
     def setOnProgress(self, slot):
         if self.keyobj is None:
-            self.connect(SIGNAL("progress(int, int)"), slot)
+            self.connect(self, SIGNAL("progress(int, int)"), slot)
         else:
-            self.connect(SIGNAL("progress(int, int)"), lambda current, total: slot(self.keyobj, current, total))
+            self.connect(self, SIGNAL("progress(int, int)"), lambda current, total: slot(self.keyobj, current, total))
     
     def run(self):
         try:
-            fo = open(self.filename, "wb")
+            filename = os.path.join(self.outdir, self.url.split("/")[-1])
+            fo = open(filename, "wb")
             urlhandle = urlopen(self.url)
             totalsize = int(urlhandle.info()["Content-Length"])
             actualsize = 0

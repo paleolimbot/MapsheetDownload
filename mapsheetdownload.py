@@ -85,9 +85,7 @@ class MapsheetDownload:
             pass
     '''
     def run(self):
-        dialog = mapsheetdownloaddialog.MapsheetDownload()
-        dialog.NTS_50k_Sheet='092h09'
-        dialog.iface = self.iface
+        dialog = mapsheetdownloaddialog.MapsheetDownloadDialog(self.iface)
         dialog.exec_()  
         
 if __name__ == "__main__":
