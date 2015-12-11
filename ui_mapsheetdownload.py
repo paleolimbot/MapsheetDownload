@@ -25,7 +25,7 @@ except AttributeError:
 class Ui_MapsheetDownload(object):
     def setupUi(self, MapsheetDownload):
         MapsheetDownload.setObjectName(_fromUtf8("MapsheetDownload"))
-        MapsheetDownload.resize(649, 385)
+        MapsheetDownload.resize(649, 389)
         self.verticalLayout_5 = QtGui.QVBoxLayout(MapsheetDownload)
         self.verticalLayout_5.setObjectName(_fromUtf8("verticalLayout_5"))
         self.horizontalLayout_5 = QtGui.QHBoxLayout()
@@ -130,9 +130,9 @@ class Ui_MapsheetDownload(object):
         self.verticalLayout_5.addLayout(self.horizontalLayout_8)
         self.horizontalLayout_7 = QtGui.QHBoxLayout()
         self.horizontalLayout_7.setObjectName(_fromUtf8("horizontalLayout_7"))
-        self.Status = QtGui.QPlainTextEdit(MapsheetDownload)
-        self.Status.setObjectName(_fromUtf8("Status"))
-        self.horizontalLayout_7.addWidget(self.Status)
+        self.status = QtGui.QPlainTextEdit(MapsheetDownload)
+        self.status.setObjectName(_fromUtf8("status"))
+        self.horizontalLayout_7.addWidget(self.status)
         self.buttonBox = QtGui.QDialogButtonBox(MapsheetDownload)
         sizePolicy = QtGui.QSizePolicy(QtGui.QSizePolicy.Preferred, QtGui.QSizePolicy.Fixed)
         sizePolicy.setHorizontalStretch(0)

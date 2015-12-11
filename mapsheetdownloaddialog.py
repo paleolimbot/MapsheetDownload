@@ -19,10 +19,9 @@
  *                                                                         *
  ***************************************************************************/
 """
-import sys,os,string,errno,csv,fnmatch,ftplib,zipfile,shutil,urllib2,threading,time
-from ftplib import FTP
+import os, zipfile, shutil, time
+from urllib2 import urlopen
 
-from PyQt4 import QtCore, QtGui
 from PyQt4.QtCore import *
 from PyQt4.QtGui import *
 
@@ -52,84 +51,51 @@ THEME_DICT={'BS':'Buildings_Structures',
 class MapsheetException(Exception):
     pass
 
-class MapsheetDownload(QtGui.QDialog, Ui_MapsheetDownload):
-    def __init__(self):
-        QtGui.QDialog.__init__(self)
-        # Set up the user interface from Designer.
-        #self.ui = Ui_MapsheetDownload()
+KEY_OUTDIR = '/CanVecDownloader/lastSaveFileDir'
+KEY_LASTSHEET50 = '/CanVecDownloader/lastSheets50k'
+KEY_LASTSHEET250 = '/CanVecDownloader/lastSheets250k'
+
+class MapsheetDownloadDialog(QDialog, Ui_MapsheetDownload):
+    def __init__(self, qgisinterface):
+        QDialog.__init__(self)
         self.setupUi(self)
-        QObject.connect( self.browserButton, SIGNAL( "clicked()" ), self.outputDirectory )
+        self.iface = qgisinterface
+        
+        self.connect(self.browserButton, SIGNAL("clicked()"), self.setOutputDirectory)
         self.connect(self.fromExtent50k, SIGNAL("clicked()"), self.autoFillMapsheetsBox50k)
         self.connect(self.fromExtent250k, SIGNAL("clicked()"), self.autoFillMapsheetsBox250k)
         
-    def outputDirectory(self):
-        """Open a browser dialog and set the output path"""
-        outputDir = self.saveDialog(self)
-        if not outputDir:
-            return
-        self.setOutputFolderPath((outputDir))
-
-    def update_progress_bar(self):
-        """Update the progress bar."""
-        self.progressBar.setValue(self.progressBar.value() + 1)
-        time.sleep(.02)
-    
-    def setOutputFolderPath(self, outputDir):
-        """Set the output file path."""
-        self.outputDir.setText(outputDir)
+        #set output dir text from saved value
+        settings = QSettings()
+        self.outputDir.setText(settings.value(KEY_OUTDIR))
+        self.input50k.setText(settings.value(KEY_LASTSHEET50))
+        self.input250k.setText(settings.value(KEY_LASTSHEET250))
         
-    def getFlags(self):
-        downloadFlags = [self.downloadCanVec.isChecked(),self.downloadNTDB50k.isChecked(),self.downloadDEM50k.isChecked(),self.downloadTopo50k.isChecked(),self.downloadNTDB250k.isChecked(),self.downloadDEM250k.isChecked(),self.downloadTopo250k.isChecked(),self.downloadCanVec_plus.isChecked()]
-        return downloadFlags
+    def setOutputDirectory(self):
+        """Open a browser dialog and set the output path"""
+        settings = QSettings()
+        lastOutDir = settings.value(KEY_OUTDIR)
 
-    def countDownloadFiles(self):
-        downloadFlags = self.getFlags()
-        numFlags_50k = downloadFlags[0:4].count(True)
-        numFlags_250k = downloadFlags[4:].count(True)
-        numNTS_50k_Sheets=len(str(self.input50k.text()).split(','))
-        numNTS_250k_Sheets=len(str(self.input250k.text()).split(','))
-        progressBarRange = (numNTS_50k_Sheets*numFlags_50k) + (numNTS_250k_Sheets*numFlags_250k)
-        return progressBarRange
+        outputDir = unicode(QFileDialog.getExistingDirectory(self, self.tr('Specify output directory'), lastOutDir))
+        if outputDir:
+            settings.setValue(KEY_OUTDIR, outputDir)
+        else:
+            return
+        self.outputDir.setText(outputDir)
+        #TODO save output directory to prefs
 
     def accept(self):
-        self.Status.clear()
-        time.sleep(.02)
+        self.status.clear()
         input50k = str(self.input50k.text())
         input250k = str(self.input250k.text())
         outputDir = str(self.outputDir.text())
-        progressBarRange = self.countDownloadFiles()
-        self.progressBar.setProperty("value", 0)
-        self.progressBar.setRange(0,progressBarRange)
-        self.Status.setPlainText(str('Download Starting...'))
-        time.sleep(.02)
-        try:
-            self.download(outputDir,input50k,input250k,self.getFlags())
-        except MapsheetException as e:
-            self.Status.appendPlainText(str(e))
-        self.Status.appendPlainText('\nDownload Complete')            
-        time.sleep(.02)
-
-        if self.addMapLayers.isChecked():
-            try:
-                self.addToLayers(outputDir,input50k,input250k,self.getFlags())
-            except MapsheetException as e:
-                self.Status.appendPlainText(str(e))
-        self.update_progress_bar()
-        time.sleep(.02)
-
         
-    def saveDialog(self,parent):
-        """Opens a browser dialog and returns the selected directory"""
-        settings = QSettings()
-        key = '/SJ/lastSaveFileDir'
-        outDir = settings.value(key)
-
-        outputDir = QFileDialog.getExistingDirectory(parent, parent.tr('Specify output directory'), outDir)
-        outputDir = unicode(outputDir)
-        if outputDir:
-            settings.setValue(key, outDir)
-        return outputDir
-    
+        #TODO do downloading
+        
+        
+        #add layers to map
+        if self.addMapLayers.isChecked():
+            pass
     
     def autoFillMapsheetsBox50k(self):
         extent = self.iface.mapCanvas().extent()
@@ -139,465 +105,68 @@ class MapsheetDownload(QtGui.QDialog, Ui_MapsheetDownload):
     def autoFillMapsheetsBox250k(self):
         extent = self.iface.mapCanvas().extent()
         sheetslist = getMapsheetIdsFromExtent(nts.SCALE_250K, extent)
-        self.input250k.setText(", ".join(sheetslist))
+        self.input250k.setText(", ".join(sheetslist))        
 
-    def dlCanVec(self,DestinationDirectory,NTS_50k_Sheet):
-        """
-        Creates CanVecData Sub Directory if it does not already exist.
-        Retrieves the ftp file using the FTPHOST global variable and ftpPath
-        Downloads the NTS 50k CanVec ftpFile from ftp://ftp2.cits.rncan.gc.ca/pub/canvec/50k_shp/
-        Extracts the data to the NTS_50k_Sheet subdirectory 
-
-        FTPHOST = 'ftp2.cits.rncan.gc.ca'
-        ftpPath = 'pub/canvec/50k_shp/'
-        """
-        ftpPath = 'pub/canvec/50k_shp/'
-        series50k,mapArea50k,sheet50k = parse50kSheets(NTS_50k_Sheet)
-
-        cwd=os.getcwd()
-
-        d = os.path.join(DestinationDirectory,'CanVecData',NTS_50k_Sheet)
-        downloadDir=str(os.path.join(DestinationDirectory,'CanVecData'))
-        outfile=os.path.join(downloadDir,'canvec_'+str.lower(NTS_50k_Sheet)+'_shp.zip')
-
-        if not os.path.exists(d):
-            os.makedirs(d)
-        if os.path.exists(outfile):
-            self.Status.appendPlainText('CanVec Mapsheet '+str(NTS_50k_Sheet)+str(' already retrieved from FTP site'))
-        else:
-            os.chdir(downloadDir)
-            ftpFile = 'retr '+ftpPath+series50k+'/'+str.lower(mapArea50k)+'/canvec_'+str.lower(NTS_50k_Sheet)+'_shp.zip'
-            self.Status.appendPlainText(str(ftpFile))
-            ftp = FTP(FTPHOST)
-            ftp.login()
-            ftp.retrbinary(ftpFile,open(outfile, 'wb').write)
-        os.chdir(cwd)
-        zipFileName = os.path.join(downloadDir,'canvec_'+str.lower(NTS_50k_Sheet)+'_shp.zip')
-
-        if os.path.exists(zipFileName):
-            zipF = zipfile.ZipFile(zipFileName)
-            zipF.extractall(d)
-
-    def dlCanVec_plus(self,DestinationDirectory,NTS_250k_Sheet):
-        """
-        Creates CanVec+ Sub Directory if it does not already exist.
-        Retrieves the ftp file using the FTPHOST global variable and ftpPath
-        Downloads the NTS 50k CanVec+ ftpFile from ftp://ftp2.cits.rncan.gc.ca/pub/canvec+/shp/
-        Extracts the data to the NTS_250k_Sheet subdirectory 
-
-        FTPHOST = 'ftp2.cits.rncan.gc.ca'
-        ftpPath = 'pub/canvec+/shp/'
-        """
-        ftpPath = 'pub/canvec+/shp/'
-        series250k,mapArea250k = parse250kSheets(NTS_250k_Sheet)
-
-        cwd=os.getcwd()
-
-        d = os.path.join(DestinationDirectory,'CanVec+',NTS_250k_Sheet)
-        downloadDir=str(os.path.join(DestinationDirectory,'CanVec+'))
-        outfile=os.path.join(downloadDir,'canvec_'+str.upper(NTS_250k_Sheet)+'_shp.zip')
-
-        if not os.path.exists(d):
-            os.makedirs(d)
-        if os.path.exists(outfile):
-            self.Status.appendPlainText('CanVec Plus Mapsheet '+str(NTS_250k_Sheet)+str(' already retrieved from FTP site'))
-        else:
-            os.chdir(downloadDir)
-            ftpFile = 'retr '+ftpPath+series250k+'/'+'canvec_'+str.upper(NTS_250k_Sheet)+'_shp.zip'
-            self.Status.appendPlainText(str(ftpFile))
-            ftp = FTP(FTPHOST)
-            ftp.login()
-            ftp.retrbinary(ftpFile,open(outfile, 'wb').write)
-        os.chdir(cwd)
-        zipFileName = os.path.join(downloadDir,'canvec_'+str.upper(NTS_250k_Sheet)+'_shp.zip')
-
-        if os.path.exists(zipFileName):
-            zipF = zipfile.ZipFile(zipFileName)
-            zipF.extractall(d)          
-
-    def dlNTDB50k(self,DestinationDirectory,NTS_50k_Sheet):
-        """
-        Creates NTDB Sub Directory if it does not already exist.
-        Retrieves the ftp file using the FTPHOST global variable and ftpPath
-        Downloads the NTS 50k CanVec ftpFile from ftp://ftp2.cits.rncan.gc.ca/pub/bndt/50k_shp_en/
-        Extracts the data to the NTS_50k_Sheet subdirectory 
-
-        FTPHOST = 'ftp2.cits.rncan.gc.ca'
-        ftpPath = 'pub/canvec/50k_shp/'
-        """
-        ftpPath = 'pub/bndt/50k_shp_en/'
-        series50k,mapArea50k,sheet50k = parse50kSheets(NTS_50k_Sheet)
-
-        cwd=os.getcwd()
-
-        d = os.path.join(DestinationDirectory,'NTDBData',NTS_50k_Sheet)
-        downloadDir=str(os.path.join(DestinationDirectory,'NTDBData'))
-        outfile=os.path.join(downloadDir,'bndt_'+str.lower(NTS_50k_Sheet)+'_shp_en.zip')
-
-        if not os.path.exists(d):
-            os.makedirs(d)
-        if os.path.exists(outfile):
-            self.Status.appendPlainText('NTDB Mapsheet '+str(NTS_50k_Sheet)+str(' already retrieved from FTP site'))
-        else:
-            os.chdir(downloadDir)
-            ftpFile = 'retr '+ftpPath+series50k+'/'+str.lower(mapArea50k)+'/bndt_'+str.lower(NTS_50k_Sheet)+'_shp_en.zip'
-            self.Status.appendPlainText(str(ftpFile))
-            ftp = FTP(FTPHOST)
-            ftp.login()
-            ftp.retrbinary(ftpFile,open(outfile, 'wb').write)
-        os.chdir(cwd)
-        zipFileName = os.path.join(downloadDir,'bndt_'+str.lower(NTS_50k_Sheet)+'_shp_en.zip')
-
-        if os.path.exists(zipFileName):
-            zipF = zipfile.ZipFile(zipFileName)
-            zipF.extractall(d)    
-
-    def dlNTDB250k(self,DestinationDirectory,NTS_250k_Sheet):
-        """
-        Creates NTDB Sub Directory if it does not already exist.
-        Retrieves the ftp file using the FTPHOST global variable and ftpPath
-        Downloads the NTS 50k CanVec ftpFile from ftp://ftp2.cits.rncan.gc.ca/pub/bndt/50k_shp_en/
-        Extracts the data to the NTS_50k_Sheet subdirectory 
-
-        FTPHOST = 'ftp2.cits.rncan.gc.ca'
-        ftpPath = 'pub/canvec/50k_shp/'
-        """
-        ftpPath = 'pub/bndt/250k_shp_en/'
-        series250k,mapArea250k = parse250kSheets(NTS_250k_Sheet)
-
-        cwd=os.getcwd()
-
-        d = os.path.join(DestinationDirectory,'NTDBData',NTS_250k_Sheet)
-        downloadDir=str(os.path.join(DestinationDirectory,'NTDBData'))
-        outfile=os.path.join(downloadDir,'bndt_'+str.lower(NTS_250k_Sheet)+'_shp_en.zip')
-
-        if not os.path.exists(d):
-            os.makedirs(d)
-        if os.path.exists(outfile):
-            self.Status.appendPlainText('NTDB Mapsheet '+str(NTS_250k_Sheet)+' already retrieved from FTP site')
-        else:
-            os.chdir(downloadDir)
-            ftpFile = 'retr '+ftpPath+series250k+'/'+str.lower(mapArea250k)+'/bndt_'+str.lower(NTS_250k_Sheet)+'_shp_en.zip'
-            self.Status.appendPlainText(str(ftpFile))
-            ftp = FTP(FTPHOST)
-            ftp.login()
-            ftp.retrbinary(ftpFile,open(outfile, 'wb').write)
-        os.chdir(cwd)
-        zipFileName = os.path.join(downloadDir,'bndt_'+str.lower(NTS_250k_Sheet)+'_shp_en.zip')
-
-        if os.path.exists(zipFileName):
-            zipF = zipfile.ZipFile(zipFileName)
-            zipF.extractall(d)
-
-    def dlDEM50k(self,DestinationDirectory,NTS_50k_Sheet):
-        """
-        Creates DEM Sub Directory if it does not already exist.
-        Retrieves the ftp file using the FTPHOST global variable and ftpPath
-        Downloads the NTS 50k CanVec ftpFile from ftp://ftp2.cits.rncan.gc.ca/pub/geobase/official/cded/50k_dem/
-        Extracts the data to the NTS_50k_Sheet subdirectory 
-
-        FTPHOST = 'ftp2.cits.rncan.gc.ca'
-        ftpPath = 'pub/geobase/official/cded/50k_dem/'
-        """
-        ftpPath = 'pub/geobase/official/cded/50k_dem/'
-        series50k,mapArea50k,sheet50k = parse50kSheets(NTS_50k_Sheet)
-
-        cwd=os.getcwd()
-
-        d = os.path.join(DestinationDirectory,'DEM',NTS_50k_Sheet)
-        downloadDir=str(os.path.join(DestinationDirectory,'DEM'))
-        outfile=os.path.join(downloadDir,str.lower(NTS_50k_Sheet)+'.zip')
-
-        if not os.path.exists(d):
-            os.makedirs(d)
-        if os.path.exists(outfile):
-            self.Status.appendPlainText('DEM Mapsheet '+str(NTS_50k_Sheet)+' already retrieved from FTP site')
-        else:
-            os.chdir(downloadDir)
-            ftpFile = 'retr '+ftpPath+series50k+'/'+str.lower(NTS_50k_Sheet)+'.zip'
-            self.Status.appendPlainText(str(ftpFile))
-            ftp = FTP(FTPHOST)
-            ftp.login()
-            ftp.retrbinary(ftpFile,open(outfile, 'wb').write)
-        os.chdir(cwd)
-        zipFileName = os.path.join(downloadDir,str.lower(NTS_50k_Sheet)+'.zip')
-
-        if os.path.exists(zipFileName):
-            zipF = zipfile.ZipFile(zipFileName)
-            zipF.extractall(d)  
-
-    def dlDEM250k(self,DestinationDirectory,NTS_250k_Sheet):
-        """
-        Creates DEM Sub Directory if it does not already exist.
-        Retrieves the ftp file using the FTPHOST global variable and ftpPath
-        Downloads the NTS 50k CanVec ftpFile from ftp://ftp2.cits.rncan.gc.ca/pub/geobase/official/cded/50k_dem/
-        Extracts the data to the NTS_50k_Sheet subdirectory 
-
-        FTPHOST = 'ftp2.cits.rncan.gc.ca'
-        ftpPath = 'pub/geobase/official/cded/250k_dem/'
-        """
-        ftpPath = 'pub/geobase/official/cded/250k_dem/'
-        series250k,mapArea250k = parse250kSheets(NTS_250k_Sheet)
-
-        cwd=os.getcwd()
-
-        d = os.path.join(DestinationDirectory,'DEM',NTS_250k_Sheet)
-        downloadDir=str(os.path.join(DestinationDirectory,'DEM'))
-        outfile=os.path.join(downloadDir,str.lower(NTS_250k_Sheet)+'.zip')
-
-        if not os.path.exists(d):
-            os.makedirs(d)
-        if os.path.exists(outfile):
-            self.Status.appendPlainText('\nDEM Mapsheet '+str(NTS_250k_Sheet)+' already retrieved from FTP site')
-        else:
-            os.chdir(downloadDir)
-            ftpFile = 'retr '+ftpPath+series250k+'/'+str.lower(NTS_250k_Sheet)+'.zip'
-            self.Status.appendPlainText(str(ftpFile))
-            ftp = FTP(FTPHOST)
-            ftp.login()
-            ftp.retrbinary(ftpFile,open(outfile, 'wb').write)
-        os.chdir(cwd)
-        zipFileName = os.path.join(downloadDir,str.lower(NTS_250k_Sheet)+'.zip')
-
-        if os.path.exists(zipFileName):
-            zipF = zipfile.ZipFile(zipFileName)
-            zipF.extractall(d)      
-
-    def dlTopo50k(self,DestinationDirectory,NTS_50k_Sheet):
-        """
-        Creates Topo Sub Directory if it does not already exist.
-        Retrieves the ftp file using the FTPHOST global variable and ftpPath
-        Downloads the Toporama ftpFile from ftp://ftp2.cits.rncan.gc.ca/pub/toporama/50k_utm_tif/
-        Extracts the data to the NTS_50k_Sheet subdirectory 
-
-        FTPHOST = 'ftp2.cits.rncan.gc.ca'
-        ftpPath = 'pub/toporama/50k_utm_tif/'
-        """
-        ftpPath = 'pub/toporama/50k_utm_tif/'
-        series50k,mapArea50k,sheet50k = parse50kSheets(NTS_50k_Sheet)
-
-        cwd=os.getcwd()
-
-        d = os.path.join(DestinationDirectory,'Topo',NTS_50k_Sheet)
-        downloadDir=str(os.path.join(DestinationDirectory,'Topo'))
-        outfile=os.path.join(downloadDir,'toporama_'+str.lower(NTS_50k_Sheet)+'_utm.zip')
-
-        if not os.path.exists(d):
-            os.makedirs(d)
-        if os.path.exists(outfile):
-            self.Status.appendPlainText('Toporama Mapsheet '+str(NTS_50k_Sheet)+' already retrieved from FTP site')
-        else:
-            os.chdir(downloadDir)
-            ftpFile = 'retr '+ftpPath+series50k+'/'+str.lower(mapArea50k)+'/toporama_'+str.lower(NTS_50k_Sheet)+'_utm.zip'
-            self.Status.appendPlainText(str(ftpFile))
-            ftp = FTP(FTPHOST)
-            ftp.login()
-            ftp.retrbinary(ftpFile,open(outfile, 'wb').write)
-        os.chdir(cwd)
-        zipFileName = os.path.join(downloadDir,'toporama_'+str.lower(NTS_50k_Sheet)+'_utm.zip')
-
-        if os.path.exists(zipFileName):
-            zipF = zipfile.ZipFile(zipFileName)
-            zipF.extractall(d) 
-
-
-    def dlTopo250k(self,DestinationDirectory,NTS_250k_Sheet):
-        """
-        Creates Topo Sub Directory if it does not already exist.
-        Retrieves the ftp file using the FTPHOST global variable and ftpPath
-        Downloads the Toporama ftpFile from ftp://ftp2.cits.rncan.gc.ca/pub/canmatrix/250k_300dpi/
-        Extracts the data to the NTS_250k_Sheet subdirectory 
-
-        FTPHOST = 'ftp2.cits.rncan.gc.ca'
-        ftpPath = 'pub/canmatrix/250k_300dpi/'
-        """
-        ftpPath = 'pub/canmatrix/250k_300dpi/'
-        series250k,mapArea250k = parse250kSheets(NTS_250k_Sheet)
-
-        cwd=os.getcwd()
-
-        d = os.path.join(DestinationDirectory,'Topo',NTS_250k_Sheet)
-        downloadDir=str(os.path.join(DestinationDirectory,'Topo'))
-        outfile=os.path.join(downloadDir,'canmatrix_'+str.lower(NTS_250k_Sheet)+'_tif.zip')
-
-        if not os.path.exists(d):
-            os.makedirs(d)
-        if os.path.exists(outfile):
-            self.Status.appendPlainText('\nCanMatrix Mapsheet '+str(NTS_250k_Sheet)+' already retrieved from FTP site')
-        else:
-            os.chdir(downloadDir)
-            ftpFile = 'retr '+ftpPath+series250k+'/'+str.lower(mapArea250k)+'/canmatrix_'+str.lower(NTS_250k_Sheet)+'_tif.zip'
-            self.Status.appendPlainText(str(ftpFile))
-            ftp = FTP(FTPHOST)
-            ftp.login()
-            ftp.retrbinary(ftpFile,open(outfile, 'wb').write)
-        os.chdir(cwd)
-        zipFileName = os.path.join(downloadDir,'canmatrix_'+str.lower(NTS_250k_Sheet)+'_tif.zip')
-
-        if os.path.exists(zipFileName):
-            zipF = zipfile.ZipFile(zipFileName)
-            zipF.extractall(d) 
-            
-    def download(self,DestinationDirectory,NTS_50k_Sheets,NTS_250k_Sheets,downloadFlags):
-        """
-        This function is called when the download button is fired
-        It splits the input string from the GUI into multiple mapsheets, then for each mapsheet
-        it tests to see if the mapsheet name is valid.
-        If valid, the appropriate download functions are called according to whether the datasets are requested or not
-        """
-        NTS_50k_Sheets=NTS_50k_Sheets.split(',')
-        NTS_250k_Sheets=NTS_250k_Sheets.split(',')
-        self.Status.appendPlainText(str('Checking 50k sheets...\n'))
-        time.sleep(0.02)
-        for NTS_50k_Sheet in NTS_50k_Sheets:
-            NTS_50k_Sheet=str(NTS_50k_Sheet.strip()).lower()
-            if not isvalid50k(NTS_50k_Sheet)[0] and isvalid50k(NTS_50k_Sheet)[1]:
-                raise MapsheetException(str('50k NTS Mapsheet: '+"'"+NTS_50k_Sheet+"'"+' is invalid. Please check the name'))
-                time.sleep(0.02)
-                continue
-            if not isvalid50k(NTS_50k_Sheet)[0] and not isvalid50k(NTS_50k_Sheet)[1]:
-                self.Status.appendPlainText('No 50k NTS Mapsheets were specified')
-                time.sleep(0.02)
-                continue
-            time.sleep(0.02)
-            if downloadFlags[0]:
-                self.Status.appendPlainText(str('Downloading 1:50k CanVec Data'))
-                time.sleep(0.02)
-                self.dlCanVec(DestinationDirectory,NTS_50k_Sheet)
-                organizeByTheme(NTS_50k_Sheet,DestinationDirectory)
-                self.update_progress_bar()
-            if downloadFlags[1]:
-                self.Status.appendPlainText(str('Downloading 1:50k NTDB Data'))
-                time.sleep(0.02)
-                self.dlNTDB50k(DestinationDirectory,NTS_50k_Sheet)            
-                self.update_progress_bar()
-            if downloadFlags[2]:
-                self.Status.appendPlainText(str('Downloading 1:50k DEM Data'))
-                time.sleep(0.02)
-                self.dlDEM50k(DestinationDirectory,NTS_50k_Sheet)            
-                self.update_progress_bar()
-            if downloadFlags[3]:
-                self.Status.appendPlainText(str('Downloading 1:50k Topo Data'))
-                time.sleep(0.02)
-                self.dlTopo50k(DestinationDirectory,NTS_50k_Sheet)            
-                self.update_progress_bar()
-
-        self.Status.appendPlainText(str('Checking 250k sheets...\n'))
-        time.sleep(0.02)
-        for NTS_250k_Sheet in NTS_250k_Sheets:
-            NTS_250k_Sheet=str(NTS_250k_Sheet.strip()).lower()
-            if not isvalid250k(NTS_250k_Sheet)[0] and isvalid250k(NTS_250k_Sheet)[1]:
-                raise MapsheetException(str('250k NTS Mapsheet: '+"'"+NTS_250k_Sheet+"'"+' is invalid. Please check the name(s)'))
-                continue
-            if not isvalid250k(NTS_250k_Sheet)[0] and not isvalid250k(NTS_250k_Sheet)[1]:
-                self.Status.appendPlainText('No 250k NTS Mapsheets were specified')
-                continue
-            if downloadFlags[4]:
-                self.Status.appendPlainText(str('Downloading 1:250k NTDB Data'))
-                time.sleep(0.02)
-                self.dlNTDB250k(DestinationDirectory,NTS_250k_Sheet)
-                self.update_progress_bar()
-            if downloadFlags[5]:
-                self.Status.appendPlainText(str('Downloading 1:250k DEM Data'))
-                time.sleep(0.02)
-                self.dlDEM250k(DestinationDirectory,NTS_250k_Sheet)
-                self.update_progress_bar()
-            if downloadFlags[6]:
-                self.Status.appendPlainText(str('Downloading 1:250k Topo Data'))
-                time.sleep(0.02)
-                self.dlTopo250k(DestinationDirectory,NTS_250k_Sheet)
-                self.update_progress_bar()
-            if downloadFlags[7]:
-                self.Status.appendPlainText(str('Downloading 1:50k CanVec + Data'))
-                time.sleep(0.02)
-                self.dlCanVec_plus(DestinationDirectory,NTS_250k_Sheet)
-                self.update_progress_bar()
-                
-        if True in downloadFlags:
-            print "\nDownload Complete\n"
-        else:
-            print  "\nNo Data Downloaded\n"
+    def download(self):
+        pass
+    
+    def extract(self):
+        pass
 
     def addToLayers(self,DestinationDirectory,NTS_50k_Sheets,NTS_250k_Sheets,downloadFlags):
-        """
-        This function is called after the download function completes after the ok button is fired.
-        It walks into the directories for each download type specified by the download flags and for each NTS sheet specified.
-        It then calls the addShapesToCanvas function with adds any file ending with .shp as a layers in the layer tree.
-        """
-        NTS_50k_Sheets=NTS_50k_Sheets.split(',')
-        NTS_250k_Sheets=NTS_250k_Sheets.split(',')
-        for NTS_50k_Sheet in NTS_50k_Sheets:
-            NTS_50k_Sheet=str(NTS_50k_Sheet.strip()).lower()
-            if not isvalid50k(NTS_50k_Sheet)[0] and isvalid50k(NTS_50k_Sheet)[1]:
-                raise MapsheetException(str('50k NTS Mapsheet: '+"'"+NTS_50k_Sheet+"'"+' is invalid. Please check the name'))
-                continue
-            if not isvalid50k(NTS_50k_Sheet)[0] and not isvalid50k(NTS_50k_Sheet)[1]:
-                continue
-            if downloadFlags[2]:
-                d = os.path.join(DestinationDirectory,'DEM',NTS_50k_Sheet)
-                os.chdir(d)
-                for dirname, dirnames, filenames in os.walk(d):
-                    for filename in filenames:
-                        DEMFilePath = os.path.join(dirname, filename)
-                        addDEMToCanvas(DEMFilePath)
-            if downloadFlags[3]:
-                d = os.path.join(DestinationDirectory,'Topo',NTS_50k_Sheet)
-                os.chdir(d)
-                for dirname, dirnames, filenames in os.walk(d):
-                    for filename in filenames:
-                        TopoFilePath = os.path.join(dirname, filename)
-                        addTopoToCanvas(TopoFilePath)
-            if downloadFlags[0]:
-                d = os.path.join(DestinationDirectory,'CanVecData',NTS_50k_Sheet)
-                os.chdir(d)
-                for dirname, dirnames, filenames in os.walk(d):
-                    for filename in filenames:
-                        shapeFilePath = os.path.join(dirname, filename)
-                        addShapesToCanvas(shapeFilePath)    
-            if downloadFlags[1]:
-                d = os.path.join(DestinationDirectory,'NTDBData',NTS_50k_Sheet)
-                os.chdir(d)
-                for dirname, dirnames, filenames in os.walk(d):
-                    for filename in filenames:
-                        shapeFilePath = os.path.join(dirname, filename)
-                        addShapesToCanvas(shapeFilePath)
+        pass
 
-        for NTS_250k_Sheet in NTS_250k_Sheets:
-            NTS_250k_Sheet=str(NTS_250k_Sheet.strip()).lower()
-            if not isvalid250k(NTS_250k_Sheet)[0] and isvalid250k(NTS_250k_Sheet)[1]:
-                raise MapsheetException(str('250k NTS Mapsheet: '+"'"+NTS_250k_Sheet+"'"+' is invalid. Please check the name(s)'))
-                continue
-            if not isvalid250k(NTS_250k_Sheet)[0] and not isvalid250k(NTS_250k_Sheet)[1]:
-                continue
-            if downloadFlags[5]:
-                d = os.path.join(DestinationDirectory,'DEM',NTS_250k_Sheet)
-                os.chdir(d)
-                for dirname, dirnames, filenames in os.walk(d):
-                    for filename in filenames:
-                        DEMFilePath = os.path.join(dirname, filename)
-                        addDEMToCanvas(DEMFilePath)
-            if downloadFlags[6]:
-                d = os.path.join(DestinationDirectory,'Topo',NTS_250k_Sheet)
-                os.chdir(d)
-                for dirname, dirnames, filenames in os.walk(d):
-                    for filename in filenames:
-                        TopoFilePath = os.path.join(dirname, filename)
-                        addTopoToCanvas(TopoFilePath)
-            if downloadFlags[7]:
-                d = os.path.join(DestinationDirectory,'CanVec+',NTS_250k_Sheet)
-                os.chdir(d)
-                for dirname, dirnames, filenames in os.walk(d):
-                    for filename in filenames:
-                        CanVec_plusFilePath = os.path.join(dirname, filename)
-                        addShapesToCanvas(CanVec_plusFilePath)
 
-            if downloadFlags[4]:
-                d = os.path.join(DestinationDirectory,'NTDBData',NTS_250k_Sheet)
-                os.chdir(d)
-                for dirname, dirnames, filenames in os.walk(d):
-                    for filename in filenames:
-                        shapeFilePath = os.path.join(dirname, filename)
-                        addShapesToCanvas(shapeFilePath)
+class DownloaderThread(QThread):
+    
+    def __init__(self, url, filename, key=None):
+        QThread.__init__(self)
+        self.keyobj = key
+        self.url = url
+        self.filename = filename
+        self.cancel = False
+    
+    def setOnFinished(self, slot):
+        if self.keyobj is None:
+            self.connect(SIGNAL("finished()"), slot)
+        else:
+            self.connect(SIGNAL("finished()"), lambda: slot(self.keyobj))
+    
+    def setOnError(self, slot):
+        if self.keyobj is None:
+            self.connect(SIGNAL("error(QString)"), slot)
+        else:
+            self.connect(SIGNAL("error(QString)"), lambda string: slot(self.keyobj, string))
+    
+    def setOnProgress(self, slot):
+        if self.keyobj is None:
+            self.connect(SIGNAL("progress(int, int)"), slot)
+        else:
+            self.connect(SIGNAL("progress(int, int)"), lambda current, total: slot(self.keyobj, current, total))
+    
+    def run(self):
+        try:
+            fo = open(self.filename, "wb")
+            urlhandle = urlopen(self.url)
+            totalsize = int(urlhandle.info()["Content-Length"])
+            actualsize = 0
+            blocksize = 64*1024
+            
+            while not self.cancel:
+                block = urlhandle.read(blocksize)
+                actualsize += len(block)
+                self.emit(SIGNAL("progress(int, int)"), actualsize, totalsize)
+                if len(block) == 0:
+                    break
+                fo.write(block)
+            
+            fo.close()
+            
+        except Exception as e:
+            self.emit(SIGNAL("error(QString)"), str(e))
+        finally:
+            fo.close()
+        
 
 def createThemeLists(NTS_50k_Sheet,DestinationDirectory):
     """

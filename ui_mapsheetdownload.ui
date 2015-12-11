@@ -7,7 +7,7 @@
     <x>0</x>
     <y>0</y>
     <width>649</width>
-    <height>385</height>
+    <height>389</height>
    </rect>
   </property>
   <property name="windowTitle">
@@ -241,7 +241,7 @@
    <item>
     <layout class="QHBoxLayout" name="horizontalLayout_7">
      <item>
-      <widget class="QPlainTextEdit" name="Status"/>
+      <widget class="QPlainTextEdit" name="status"/>
      </item>
      <item>
       <widget class="QDialogButtonBox" name="buttonBox">
