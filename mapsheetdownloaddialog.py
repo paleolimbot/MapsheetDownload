@@ -19,8 +19,8 @@
  *                                                                         *
  ***************************************************************************/
 """
-import os, zipfile, shutil, time
-from urllib2 import urlopen
+import os, zipfile, shutil
+from urllib2 import urlopen, URLError
 
 from PyQt4.QtCore import *
 from PyQt4.QtGui import *
@@ -60,6 +60,8 @@ class MapsheetDownloadDialog(QDialog, Ui_MapsheetDownload):
         QDialog.__init__(self)
         self.setupUi(self)
         self.iface = qgisinterface
+        self.isprocessing = False
+        self.dlthread = None
         
         self.connect(self.browserButton, SIGNAL("clicked()"), self.setOutputDirectory)
         self.connect(self.fromExtent50k, SIGNAL("clicked()"), self.autoFillMapsheetsBox50k)
@@ -84,45 +86,96 @@ class MapsheetDownloadDialog(QDialog, Ui_MapsheetDownload):
         self.outputDir.setText(outputDir)
         #TODO save output directory to prefs
 
-    def accept(self):
-        self.status.clear()
-        input50k = str(self.input50k.text())
-        input250k = str(self.input250k.text())
-        outputDir = str(self.outputDir.text())
-        
-        #TODO do downloading
-        self.download("product", "sheets", outputDir)
-        
-        #add layers to map
-        if self.addMapLayers.isChecked():
-            pass
-    
     def autoFillMapsheetsBox50k(self):
         extent = self.iface.mapCanvas().extent()
-        sheetslist = getMapsheetIdsFromExtent(nts.SCALE_50K, extent)
+        currentcrs = self.iface.mapCanvas().mapRenderer().destinationCrs()
+        sheetslist = getMapsheetIdsFromExtent(nts.SCALE_50K, currentcrs, extent)
         self.input50k.setText(", ".join(sheetslist))
         
     def autoFillMapsheetsBox250k(self):
         extent = self.iface.mapCanvas().extent()
         sheetslist = getMapsheetIdsFromExtent(nts.SCALE_250K, extent)
-        self.input250k.setText(", ".join(sheetslist))        
+        self.input250k.setText(", ".join(sheetslist)) 
 
-    def download(self, product, sheets, outputDir):
-        #dummy download to test download thread
-        url = "http://ftp2.cits.rncan.gc.ca/pub/canvec/50k_shp/021/h/canvec_021h01_shp.zip"
-        dlthread = DownloaderThread(self, url, outputDir, key="021h01")
-        dlthread.setOnProgress(self.onDownloadProgress)
-        dlthread.setOnFinished(self.onDownlonadFinish)
-        dlthread.setOnError(self.onDownloadError)
-        dlthread.start()
+    def appendstatus(self, update):
+        self.status.insertPlainText(update + "\n")
+
+    def alert(self, message):
+        QMessageBox.information(self, "Whoa!", message)
     
-    def onDownloadError(self, key, errorString):
-        self.status.insertPlainText("error (" + key + ")! " + str(errorString))
+    def startprocessing(self):
+        self.buttonBox.button(QDialogButtonBox.Ok).setEnabled(False)
+        self.status.clear()
+        self.isprocessing = True
     
-    def onDownlonadFinish(self, key):
-        self.status.insertPlainText("done! " + key)
+    def accept(self):
+        
+        input50k = str(self.input50k.text())
+        input250k = str(self.input250k.text())
+        outputDir = str(self.outputDir.text())
+        
+        if not outputDir.strip():
+            self.alert("No output directory specified!")
+            return
+        elif not os.path.isdir(outputDir):
+            self.alert("Invalid output directory specified: " + outputDir)
+        
+        if (not input50k.strip()) and (not input250k.strip()):
+            self.alert("No NTS Ids entered!")
+            return
+        
+        parsednts = []
+        for ntsid in input50k.split(","):
+            parsed = parse50kSheets(ntsid.strip())
+            if not parsed:
+                self.alert("Invalid NTS Id: %s" % ntsid)
+                return
+            parsednts.append(parsed)
+        
+        #TODO get products
+        products = ["canvec", ]
+        
+        self.info = {}
+        self.info["ntsid"] = []
+        self.info["product"] = []
+        self.info["url"] = []
+        self.info["downloaded_file"] = []
+        
+        for ntsid in parsednts:
+            for product in products:
+                self.info["ntsid"].append(ntsid)
+                self.info["product"].append(product)
+                self.info["url"].append(geturl(ntsid, product))
+        
+        self.info["length"] = len(self.info["ntsid"])
+        
+        self.startprocessing()
+        self.appendstatus("Downloading %s files" % self.info["length"])
+        self.dlthread = DownloaderThread(self, self.info["url"], outputDir)
+        self.dlthread.setOnProgress(self.onProgress)
+        self.dlthread.setOnFinished(self.onDownlonadFinish)
+        self.dlthread.setOnError(self.onDownloadError)
+        self.dlthread.start()
+        
+        
+        #add layers to map
+        if self.addMapLayers.isChecked():
+            pass
+
+    def onDownlonadFinish(self):
+        self.info["downloaded_file"] = self.dlthread.downloadedfiles
+        self.dlthread = None
+        self.appendstatus("Finished downloading.")
+        self.appendstatus(str(self.info))
+
+    def endprocessing(self):
+        self.buttonBox.button(QDialogButtonBox.StandardButton.Ok).setEnabled(True)
+        self.isprocessing = False     
     
-    def onDownloadProgress(self, key, current, total):
+    def onDownloadError(self, errorString):
+        self.appendstatus("Download Error: " + str(errorString))
+    
+    def onProgress(self, current, total):
         self.progressBar.setMaximum(total)
         self.progressBar.setValue(current)
     
@@ -135,12 +188,27 @@ class MapsheetDownloadDialog(QDialog, Ui_MapsheetDownload):
 
 class DownloaderThread(QThread):
     
-    def __init__(self, parent, url, outdir, key=None):
+    def __init__(self, parent, url, outfile, key=None, overwrite=False):
         QThread.__init__(self, parent)
         self.keyobj = key
-        self.url = url
-        self.outdir = outdir
+        if(isinstance(url, list)):
+            self.url = url
+        else:
+            self.url = [url, ]
+        
+        if isinstance(outfile, list):
+            if not isinstance(self.url, list):
+                raise ValueError("Cannot pass list to outfile if url is not also a list")
+            if len(outfile) != len(self.url):
+                raise ValueError("url and outfile must be of same length \
+                if list is passed to DownloaderThread")
+            self.outfile = outfile
+        else:
+            self.outfile = [outfile, ] * len(self.url)
+        
+        self.overwrite = overwrite
         self.cancel = False
+        self.downloadedfiles = []
     
     def setOnFinished(self, slot):
         if self.keyobj is None:
@@ -161,28 +229,75 @@ class DownloaderThread(QThread):
             self.connect(self, SIGNAL("progress(int, int)"), lambda current, total: slot(self.keyobj, current, total))
     
     def run(self):
-        try:
-            filename = os.path.join(self.outdir, self.url.split("/")[-1])
-            fo = open(filename, "wb")
-            urlhandle = urlopen(self.url)
-            totalsize = int(urlhandle.info()["Content-Length"])
-            actualsize = 0
-            blocksize = 64*1024
-            
-            while not self.cancel:
-                block = urlhandle.read(blocksize)
-                actualsize += len(block)
-                self.emit(SIGNAL("progress(int, int)"), actualsize, totalsize)
-                if len(block) == 0:
-                    break
-                fo.write(block)
-            
-            fo.close()
-            
-        except Exception as e:
-            self.emit(SIGNAL("error(QString)"), str(e))
-        finally:
-            fo.close()
+        #first get total size (also makes sure all URLs are valid
+        self.emit(SIGNAL("progress(int, int)"), 0, 0)
+        
+        
+        filenames = []
+        totalsize = 0
+        badurls = []
+        
+        for i in range(len(self.url)): 
+            outfile = self.outfile[i]
+            url = self.url[i]
+            if os.path.isdir(outfile):
+                filenames.append(os.path.join(outfile, url.split("/")[-1]))
+            else:
+                filenames.append(filename = outfile)
+            try:
+                if not os.path.isfile(filenames[i]) or self.overwrite:
+                    urlhandle = urlopen(url)
+                    totalsize += int(urlhandle.info()["Content-Length"])
+                    urlhandle.close()
+                else:
+                    totalsize += os.path.getsize(filenames[i])
+            except URLError as e:
+                badurls.append(url)
+                self.emit(SIGNAL("error(QString)"), str(e))
+            finally:
+                try:
+                    urlhandle.close()
+                except Exception:
+                    pass
+        
+        actualsize = 0
+        self.emit(SIGNAL("progress(int, int)"), actualsize, totalsize)
+        for i in range(len(self.url)):
+            url = self.url[i]
+            filename = filenames[i]
+            #skip urls that failed the first step
+            if url in badurls:
+                self.downloadedfiles.append(None)
+                continue
+            try:
+                if not os.path.isfile(filenames[i]) or self.overwrite:
+                    fo = open(filename, "wb")
+                    urlhandle = urlopen(url)
+                    blocksize = 64*1024
+                    
+                    while not self.cancel:
+                        block = urlhandle.read(blocksize)
+                        actualsize += len(block)
+                        self.emit(SIGNAL("progress(int, int)"), actualsize, totalsize)
+                        if len(block) == 0:
+                            break
+                        fo.write(block)
+                    
+                    fo.close()
+                    urlhandle.close()
+                else:
+                    actualsize += os.path.getsize(filenames[i])
+                    self.emit(SIGNAL("progress(int, int)"), actualsize, totalsize)
+                
+                self.downloadedfiles.append(filename)
+            except IOError as e:
+                self.emit(SIGNAL("error(QString)"), str(e))
+            finally:
+                try:
+                    fo.close()
+                    urlhandle.close()
+                except Exception:
+                    pass
         
 
 def createThemeLists(NTS_50k_Sheet,DestinationDirectory):
@@ -402,11 +517,14 @@ def parse50kSheets(NTS_50k_Sheet):
         Area:   h
         Sheet:  12
         """
-        series50k = NTS_50k_Sheet[0:3]
-        mapArea50k = NTS_50k_Sheet[3:4]
-        sheet50k = NTS_50k_Sheet[4:6]
+        if(len(NTS_50k_Sheet) == 6):
+            series50k = NTS_50k_Sheet[0:3]
+            mapArea50k = NTS_50k_Sheet[3:4]
+            sheet50k = NTS_50k_Sheet[4:6]
         
-        return series50k,mapArea50k,sheet50k
+            return series50k,mapArea50k,sheet50k
+        else:
+            return None
 
 def parse250kSheets(NTS_250k_Sheet):
         """
@@ -417,9 +535,13 @@ def parse250kSheets(NTS_250k_Sheet):
         Series: 092
         Area:   h
         """
-        series250k = NTS_250k_Sheet[0:3]
-        mapArea250k = NTS_250k_Sheet[3:4]
-        return series250k,mapArea250k
+        if(len(NTS_250k_Sheet) == 4):
+            series250k = NTS_250k_Sheet[0:3]
+            mapArea250k = NTS_250k_Sheet[3:4]
+            
+            return series250k,mapArea250k
+        else:
+            return None
         
 def getShpList(Dir):
     """
@@ -435,9 +557,28 @@ def getShpList(Dir):
             shpList.append(str(fileName))
     return shpList,shpHeadList
 
-def getMapsheetIdsFromExtent(scale, extent):
+def getMapsheetIdsFromExtent(scale, currentcrs, extent):
     '''Uses the nts module to get a list of nts ids based on the current extent.'''
-    bounds = (extent.xMinimum(), extent.xMaximum(),
-              extent.yMinimum(), extent.yMaximum())
+    tocrs = QgsCoordinateReferenceSystem(4326)
+    xform = QgsCoordinateTransform(currentcrs, tocrs)
+    rectll = xform.transform(extent)
+    
+    bounds = (rectll.xMinimum(), rectll.xMaximum(),
+              rectll.yMinimum(), rectll.yMaximum())
     return ["".join(nts.ntsId(scale, tile)) for tile in nts.tilesBy(scale, bounds)]
+
+def geturl(ntsid, product):
+    
+    if product == "canvec":
+        if len(ntsid) != 3:
+            return None
+        series, area, sheet = ntsid
+        return "http://ftp2.cits.rncan.gc.ca/pub/canvec/50k_shp/%s/%s/canvec_%s%s%s_shp.zip" % (series,
+                                                                                               area.lower(),
+                                                                                               series,
+                                                                                               area.lower(),
+                                                                                               sheet)
+    else:
+        return None
+    
     
